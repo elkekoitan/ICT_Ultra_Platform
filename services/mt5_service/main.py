@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from datetime import datetime
 import MetaTrader5 as mt5
 import logging
+import os
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -25,20 +26,59 @@ state = {
     "connected": False
 }
 
-def _connect(login:int, password:str, server:str, path:str|None=None):
+def _connect(login: int, password: str, server: str, path: str | None = None):
+    """MT5 terminale bağlan. Terminal zaten açıksa sadece initialize kullanılır.
+
+    Args:
+        login: Hesap numarası
+        password: Şifre
+        server: Sunucu adı
+        path: İsteğe bağlı terminal yolu.
+            * Bir dizin verilirse <dizin>/terminal64.exe otomatik eklenir.
+            * Bir .exe dosyası verilirse doğrudan kullanılır.
+    Returns:
+        bool: Bağlantı başarılı mı
+    """
+    exe_path = None
     if path:
-        mt5.initialize(path=path)
+        # eğer path bir dizinse exe oluştur
+        if path.lower().endswith(".exe"):
+            exe_path = path
+        else:
+            exe_path = os.path.join(path, "terminal64.exe")
+    try:
+        if exe_path:
+            ok_init = mt5.initialize(path=exe_path, login=login, password=password, server=server)
+        else:
+            ok_init = mt5.initialize(login=login, password=password, server=server)
+    except Exception as ex:
+        logger.exception("MT5 initialize failed: %s", ex)
+        return False
+
+    if ok_init:
+        return True
+
+    # Eğer initialize başarısız ama terminal halihazırda açıksa, ikinci bir deneme yap
+    mt5.shutdown()
+    if exe_path:
+        mt5.initialize(path=exe_path)
     else:
         mt5.initialize()
-    ok = mt5.login(login=login, password=password, server=server)
-    return ok
+    ok_login = mt5.login(login=login, password=password, server=server)
+    return ok_login
 
 @app.post("/connect")
 def connect(req: ConnectRequest):
     if _connect(req.login, req.password, req.server, req.path):
         state["connected"] = True
         info = mt5.account_info()
-        return {"success": True, "balance": info.balance, "currency": info.currency}
+        return {
+            "success": True,
+            "balance": info.balance,
+            "currency": info.currency,
+            "name": info.name,
+            "login": info.login,
+        }
     code, msg = mt5.last_error()
     return {"success": False, "error_code": code, "message": msg}
 
